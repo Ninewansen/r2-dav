@@ -760,6 +760,16 @@ async function handle_get(request: Request, bucket: R2Bucket): Promise<Response>
 		} else if (!isR2ObjectBody(object)) {
 			return new Response('Precondition Failed', { status: 412 });
 		} else {
+			const imageContentTypes: Record<string, string> = {
+				avif: 'image/avif',
+				gif: 'image/gif',
+				jpeg: 'image/jpeg',
+				jpg: 'image/jpeg',
+				png: 'image/png',
+				webp: 'image/webp',
+			};
+			const extension = resource_path.split('.').pop()?.toLowerCase() ?? '';
+			const imageContentType = imageContentTypes[extension];
 			const { rangeOffset, rangeEnd } = calcContentRange(object);
 			const contentLength = rangeEnd - rangeOffset + 1;
 			const rangeRequested = request.headers.has('Range') && object.range !== undefined;
@@ -767,10 +777,12 @@ async function handle_get(request: Request, bucket: R2Bucket): Promise<Response>
 				status: rangeRequested ? 206 : 200,
 				headers: {
 					'Accept-Ranges': 'bytes',
-					'Content-Type': object.httpMetadata?.contentType ?? 'application/octet-stream',
+					'Content-Type': imageContentType ?? object.httpMetadata?.contentType ?? 'application/octet-stream',
 					'Content-Length': contentLength.toString(),
 					...(rangeRequested ? { 'Content-Range': `bytes ${rangeOffset}-${rangeEnd}/${object.size}` } : {}),
-					...(object.httpMetadata?.contentDisposition
+					...(imageContentType
+						? { 'Content-Disposition': 'inline' }
+						: object.httpMetadata?.contentDisposition
 						? {
 								'Content-Disposition': object.httpMetadata.contentDisposition,
 							}
@@ -1598,9 +1610,14 @@ function is_authorized(authorization_header: string, username: string, password:
 export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 		const { bucket } = env;
+		const path = new URL(request.url).pathname;
+		const isPublicImage =
+			['GET', 'HEAD'].includes(request.method) &&
+			/^\/mac-image\/.+\.(?:avif|gif|jpe?g|png|webp)$/i.test(path);
 
 		if (
 			request.method !== 'OPTIONS' &&
+			!isPublicImage &&
 			!is_authorized(request.headers.get('Authorization') ?? '', env.USERNAME, env.PASSWORD)
 		) {
 			return new Response('Unauthorized', {
